@@ -9,11 +9,12 @@ import { Curve } from './libraries/Curve.sol';
 import { FeeHelper } from './libraries/FeeHelper.sol';
 import { Constants} from './libraries/Constants.sol';
 import { SafeCast } from './libraries/SafeCast.sol';
-import './interfaces/IERC20.sol';
+import { IERC20 } from './interfaces/IERC20.sol';
 import './interfaces/IUniswapV2Factory.sol';
 import './interfaces/IUniswapV2Callee.sol';
 import { IActivationHandler } from './interfaces/IActivationHandler.sol';
 import { IPositionManager } from './interfaces/IPositionManager.sol';
+import { IUniswapV3MintCallback } from './interfaces/IUniswapV3MintCallback.sol';
 
 contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     using SafeMath for uint256;
@@ -466,8 +467,12 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     }
 
     function mint(
-        AddLiquidityParams memory params
-    ) external lock returns (uint256 liquidityDelta, uint256 amount0, uint256 amount1) {            
+        address recipient,
+        uint128 liquidityDelta,
+        uint256 amount0Threshold,
+        uint256 amount1Threshold,
+        bytes calldata data
+    ) external lock returns (uint256 amount0, uint256 amount1) {            
         // Calculate liquidity based on current state
         address _token0 = token0;
         address _token1 = token1;
@@ -476,14 +481,23 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         amount1 = result.tokenBAmount;
         require(amount0 > 0 || amount1 > 0, "AmountIsZero");
         applyAddLiquidity(liquidityDelta, params.recipient);
-        if (amount0 > 0) {
-            IERC20(_token0).transferFrom(msg.sender, address(this), amount0);
-            reserve0 += amount0.safe128();
-        }
-        if (amount1 > 0) {
-            IERC20(_token1).transferFrom(msg.sender, address(this), amount1);
-            reserve1 += amount1.safe128();
-        } 
+        // if (amount0 > 0) {
+        //     IERC20(_token0).transferFrom(msg.sender, address(this), amount0);
+        //     reserve0 += amount0.safe128();
+        // }
+        // if (amount1 > 0) {
+        //     IERC20(_token1).transferFrom(msg.sender, address(this), amount1);
+        //     reserve1 += amount1.safe128();
+        // } 
+
+        uint256 balance0Before;
+        uint256 balance1Before;
+        if (amount0 > 0) balance0Before = balance0();
+        if (amount1 > 0) balance1Before = balance1();
+        IUniswapV3MintCallback(msg.sender).uniswapV3MintCallback(amount0, amount1, data);
+        if (amount0 > 0) require(balance0Before.add(amount0) <= balance0(), 'M0');
+        if (amount1 > 0) require(balance1Before.add(amount1) <= balance1(), 'M1');
+
 
         // uint256 balance0 = IERC20(_token0).balanceOf(address(this));
         // uint256 balance1 = IERC20(_token1).balanceOf(address(this));
@@ -584,6 +598,24 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         (bool success, bytes memory data) = token.call(abi.encodeWithSelector(SELECTOR, to, value));
         require(success && (data.length == 0 || abi.decode(data, (bool))), 'UniswapV2: TRANSFER_FAILED');
     }
+
+    function balance0() private view returns (uint256) {
+        (bool success, bytes memory data) =
+            token0.staticcall(abi.encodeWithSelector(IERC20.balanceOf.selector, address(this)));
+        require(success && data.length >= 32);
+        return abi.decode(data, (uint256));
+    }
+
+    /// @dev Get the pool's balance of token1
+    /// @dev This function is gas optimized to avoid a redundant extcodesize check in addition to the returndatasize
+    /// check
+    function balance1() private view returns (uint256) {
+        (bool success, bytes memory data) =
+            token1.staticcall(abi.encodeWithSelector(IERC20.balanceOf.selector, address(this)));
+        require(success && data.length >= 32);
+        return abi.decode(data, (uint256));
+    }
+
 
     function skim(address to) external lock {
         address _token0 = token0;

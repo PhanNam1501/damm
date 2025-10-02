@@ -19,6 +19,17 @@ interface IUniswapV2Router {
         address recipient;
         uint64 deadlone;
     }
+
+    struct MintCallbackData {
+        PoolKey poolKey;
+        address payer;
+    }
+
+    struct PoolKey {
+        address token0;
+        address token1;
+        // uint24 fee;
+    }
     
     // ==================== LIQUIDITY FUNCTIONS ====================
 
