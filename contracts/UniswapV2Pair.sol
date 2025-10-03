@@ -15,6 +15,7 @@ import './interfaces/IUniswapV2Callee.sol';
 import { IActivationHandler } from './interfaces/IActivationHandler.sol';
 import { IPositionManager } from './interfaces/IPositionManager.sol';
 import { IUniswapV3MintCallback } from './interfaces/IUniswapV3MintCallback.sol';
+import { IUniswapV3SwapCallback } from './interfaces/IUniswapV3SwapCallback.sol';
 
 contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     using SafeMath for uint256;
@@ -404,32 +405,13 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         
         // Transfer input tokens from sender
         if (amount0In > 0) {
-            IERC20(_token0).transferFrom(msg.sender, address(this), amount0In);
+            //IERC20(_token0).transferFrom(msg.sender, address(this), amount0In);
             reserve0 += swapResult.actualAmountIn.safe128();
         }
         if (amount1In > 0) {
-            IERC20(_token1).transferFrom(msg.sender, address(this), amount1In);
+            //IERC20(_token1).transferFrom(msg.sender, address(this), amount1In);
             reserve1 += swapResult.actualAmountIn.safe128();
         } // Should fix by check balance
-        
-        // Transfer output tokens to recipient
-        if (amount0Out > 0) {
-            _safeTransfer(_token0, to, amount0Out);
-            reserve0 -= amount0Out.safe128();
-        }
-        if (amount1Out > 0) {
-            _safeTransfer(_token1, to, amount1Out);
-            reserve1 -= amount1Out.safe128();
-        }
-        
-        // Callback if needed
-        if (data.length > 0) {
-            IUniswapV2Callee(to).uniswapV2Call(msg.sender, amount0Out, amount1Out, data);
-        }
-        
-        // // Verify balances after all transfers
-        // uint256 balance0 = IERC20(_token0).balanceOf(address(this));
-        // uint256 balance1 = IERC20(_token1).balanceOf(address(this));
         
         // Apply swap result - update price and fees
         applySwapResult(swapResult, feeMode, currentTimestamp);
@@ -440,6 +422,24 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         // Update dynamic fee state if needed
         if (poolFees.dynamicFees.initialized) {
             poolFees.dynamicFees.updateVolatilityAccumulator(sqrtPrice);
+        }
+
+        uint256 balance0Before;
+        uint256 balance1Before;
+        if (amount0In > 0) balance0Before = balance0();
+        if (amount1In > 0) balance1Before = balance1();
+        IUniswapV3SwapCallback(msg.sender).uniswapV3SwapCallback(amount0In, amount1In, data);
+        if (amount0In > 0) require(balance0Before.add(amount0In) <= balance0(), 'M0');
+        if (amount1In > 0) require(balance1Before.add(amount1In) <= balance1(), 'M1');
+
+        // Transfer output tokens to recipient
+        if (amount0Out > 0) {
+            _safeTransfer(_token0, to, amount0Out);
+            reserve0 -= amount0Out.safe128();
+        }
+        if (amount1Out > 0) {
+            _safeTransfer(_token1, to, amount1Out);
+            reserve1 -= amount1Out.safe128();
         }
         
         emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);
@@ -476,11 +476,11 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         // Calculate liquidity based on current state
         address _token0 = token0;
         address _token1 = token1;
-        ModifyLiquidityResult memory result = getAmountsForModifyLiquidity(params.liquidityDelta);
+        ModifyLiquidityResult memory result = getAmountsForModifyLiquidity(liquidityDelta);
         amount0 = result.tokenAAmount;
         amount1 = result.tokenBAmount;
         require(amount0 > 0 || amount1 > 0, "AmountIsZero");
-        applyAddLiquidity(liquidityDelta, params.recipient);
+        applyAddLiquidity(liquidityDelta, recipient);
         // if (amount0 > 0) {
         //     IERC20(_token0).transferFrom(msg.sender, address(this), amount0);
         //     reserve0 += amount0.safe128();
@@ -498,13 +498,16 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         if (amount0 > 0) require(balance0Before.add(amount0) <= balance0(), 'M0');
         if (amount1 > 0) require(balance1Before.add(amount1) <= balance1(), 'M1');
 
+        reserve0 += amount0.safe128();
+        reserve1 += amount1.safe128();
+
 
         // uint256 balance0 = IERC20(_token0).balanceOf(address(this));
         // uint256 balance1 = IERC20(_token1).balanceOf(address(this));
         
         // // // Update reserves with new balances
         // _update(balance0, balance1);
-        require(amount0 <= params.amount0Threshold && amount1 <= params.amount1Threshold, "ExceededSlippage");
+        require(amount0 <= amount0Threshold && amount1 <= amount1Threshold, "ExceededSlippage");
     }
 
     function applyAddLiquidity(
@@ -526,7 +529,10 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     }
 
 
-    function burn(RemoveLiquidityParams memory params) external lock returns (uint amount0, uint amount1) {
+    function burn(
+        uint128 liquidityDelta,
+        address recipient
+    ) external lock returns (uint256 amount0, uint256 amount1) {
         address _token0 = token0;
         address _token1 = token1;
         ModifyLiquidityResult memory result = getAmountsForModifyLiquidity(liquidityDelta);
@@ -534,17 +540,15 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         amount1 = result.tokenBAmount;
         require(amount0 > 0 || amount1 > 0, "AmountIsZero");
         require(amount0 <= reserve0 && amount1 <= reserve1, "Insufficient amount");
-        applyRemoveLiquidity(liquidityDelta, params.recipient);
+        applyRemoveLiquidity(liquidityDelta, recipient);
         if (amount0 > 0) {
-            IERC20(_token0).transfer(params.recipient, amount0);
+            IERC20(_token0).transfer(recipient, amount0);
             reserve0 -= amount0.safe128();
         }
         if (amount1 > 0) {
-            IERC20(_token1).transfer(params.recipient, amount1);
+            IERC20(_token1).transfer(recipient, amount1);
             reserve1 -= amount1.safe128();
         } 
-        
-        require(amount0 <= params.amount0Threshold && amount1 <= params.amount1Threshold, "ExceededSlippage");
         // uint256 balance0 = IERC20(_token0).balanceOf(address(this));
         // uint256 balance1 = IERC20(_token1).balanceOf(address(this));
         

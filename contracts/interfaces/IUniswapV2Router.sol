@@ -20,7 +20,33 @@ interface IUniswapV2Router {
         uint64 deadlone;
     }
 
+    struct RemoveLiquidityParams {
+        address tokenA;
+        address tokenB;
+        uint128 liquidity;
+        uint256 amountAMin;
+        uint256 amountBMin;
+        address recipient;
+        uint64 deadline;
+    }
+
+    struct SwapParameters {
+        address tokenA;
+        address tokenB;
+        uint256 amountAIn;
+        uint256 amountBIn;
+        uint256 amountAOutMin;
+        uint256 amountBOutMin;
+        address recipient;
+        uint64 deadline;
+    }
+
     struct MintCallbackData {
+        PoolKey poolKey;
+        address payer;
+    }
+
+    struct SwapCallbackData {
         PoolKey poolKey;
         address payer;
     }
@@ -49,14 +75,8 @@ interface IUniswapV2Router {
     ) external payable returns (uint128 liquidity, uint amountToken, uint amountETH);
     
     function removeLiquidity(
-        address tokenA,
-        address tokenB,
-        uint128 liquidity,
-        uint amountAMin,
-        uint amountBMin,
-        address to,
-        uint deadline
-    ) external returns (uint amountA, uint amountB);
+        RemoveLiquidityParams memory params
+    ) external returns (uint256 amountA, uint256 amountB);
     
     function removeLiquidityETH(
         address token,

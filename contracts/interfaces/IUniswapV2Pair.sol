@@ -168,9 +168,6 @@ interface IUniswapV2Pair {
     function price0CumulativeLast() external view returns (uint);
     function price1CumulativeLast() external view returns (uint);
     function kLast() external view returns (uint);
-
-    function burn(address to) external returns (uint amount0, uint amount1);
-    function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
     function skim(address to) external;
     function sync() external;
 
@@ -181,6 +178,18 @@ interface IUniswapV2Pair {
         uint256 amount1Threshold,
         bytes calldata data
     ) external returns (uint256 amount0, uint256 amount1);
+
+    function burn(
+        uint128 liquidityDelta,
+        address recipient
+    ) external returns (uint256 amount0, uint256 amount1);
+
+    function swap(
+        uint256 amount0In, 
+        uint256 amount1In, 
+        address to, 
+        bytes calldata data
+    ) external returns (uint256 amount0Out, uint256 amount1Out);
 
     function initialize(address, address) external;
 }

@@ -9,10 +9,11 @@ import {IERC20} from './interfaces/IERC20.sol';
 import {IWNATIVE} from './interfaces/IWNATIVE.sol';
 import {LiquidityAmounts} from './libraries/LiquidityAmounts.sol';
 import {IUniswapV3MintCallback} from './interfaces/IUniswapV3MintCallback.sol';
+import {IUniswapV3SwapCallback} from './interfaces/IUniswapV3SwapCallback.sol';
 import {PoolAddress} from './libraries/PoolAddress.sol';
 import {TransferHelper} from './libraries/TransferHelper.sol';
 
-contract UniswapV2Router is IUniswapV2Router, IUniswapV3MintCallback {
+contract UniswapV2Router is IUniswapV2Router, IUniswapV3MintCallback, IUniswapV3SwapCallback {
     using LiquidityAmounts for uint160;
 
     IUniswapV2Factory public immutable override factory;
@@ -35,6 +36,16 @@ contract UniswapV2Router is IUniswapV2Router, IUniswapV3MintCallback {
         MintCallbackData memory decoded = abi.decode(data, (MintCallbackData));
         if (amount0Owed > 0) pay(decoded.poolKey.token0, decoded.payer, msg.sender, amount0Owed);
         if (amount1Owed > 0) pay(decoded.poolKey.token1, decoded.payer, msg.sender, amount1Owed);
+    }
+
+    function uniswapV3SwapCallback(
+        uint256 amount0Delta,
+        uint256 amount1Delta,
+        bytes calldata data
+    ) external override {
+        SwapCallbackData memory decoded = abi.decode(data, (SwapCallbackData));
+        if (amount0Delta > 0) pay(decoded.poolKey.token0, decoded.payer, msg.sender, amount0Delta);
+        if (amount1Delta > 0) pay(decoded.poolKey.token1, decoded.payer, msg.sender, amount1Delta);
     }
 
     function addLiquidity(AddLiquidityParams memory params) external returns (uint128 liquidity, uint256 amountA, uint256 amountB) {
@@ -65,10 +76,39 @@ contract UniswapV2Router is IUniswapV2Router, IUniswapV3MintCallback {
         );
 
         require(amountA >= params.amountAMin && amountB >= params.amountBMin, "AmountIn slippage");
-
-
-
     }
+
+    function removeLiquidity(RemoveLiquidityParams memory params) external returns (uint256 amountA, uint256 amountB) {
+        address tokenA = params.tokenA;
+        address tokenB = params.tokenB;
+        PoolKey memory poolKey =
+            PoolKey({token0: tokenA, token1: params.tokenB});
+
+        address pair = factory.getPair(tokenA, tokenB);
+        (amountA, amountB) = IUniswapV2Pair(pair).burn(params.liquidity, params.recipient);
+
+        require(amountA >= params.amountAMin && amountB >= params.amountBMin, "AmountOut slippage");
+    }
+
+    function swap(SwapParameters memory params) external returns (uint256 amount0Out, uint256 amount1Out) {
+        address tokenA = params.tokenA;
+        address tokenB = params.tokenB;
+        PoolKey memory poolKey =
+            PoolKey({token0: tokenA, token1: params.tokenB});
+
+        address pair = factory.getPair(tokenA, tokenB);
+
+        (amount0Out, amount1Out) = IUniswapV2Pair(pair).swap(
+            params.amountAIn,
+            params.amountBIn,
+            params.recipient,
+            abi.encode(SwapCallbackData({poolKey: poolKey, payer: msg.sender}))
+        );
+
+        require(amount0Out >= params.amountAOutMin && amount1Out >= params.amountBOutMin, "AmountOut slippage");
+    }
+
+
 
     /// @param token The token to pay
     /// @param payer The entity that must pay
