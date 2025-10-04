@@ -655,9 +655,9 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
 
     function refreshVesting(
         address recipient
-    ) external {
+    ) external returns (uint128 releasedLiquidity) {
         uint64 currentPoint = activationHandler.getCurrentPoint();
-        uint128 releasedLiquidity = vesting[user].getNewReleaseLiquidity(currentPoint);
+        releasedLiquidity = vesting[user].getNewReleaseLiquidity(currentPoint);
         if (releasedLiquidity > 0) {
             releaseVestedLiquidity(recipient, releasedLiquidity);
             vesting[user].accumulateReleasedLiquidity(releasedLiquidity);
@@ -666,6 +666,58 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         if (vesting[user].isDone()) {
             delete vesting[user];
         }
+    }
+
+    function splitPosition(
+        SplitPositionParameters memory params,
+        address from,
+        address to
+    ) external returns (
+        uint128 unlockedLiquiditySplit,
+        uint128 permanentLockedLiquiditySplit,
+        uint128 feeASplit,
+        uint128 feeBSplit,
+        uint128 reward0Split,
+        uint128 reward1Split
+    ) {
+        require(
+            params.unlockedLiquidityPercentage <= 100 &&
+            params.permanentLockedLiquidityPercentage <= 100 &&
+            params.feeAPercentage <= 100 &&
+            params.feeBPercentage <= 100 &&
+            params.reward0Percentage <= 100 &&
+            params.reward1Percentage <= 100, 
+            "InvalidSplitPositionParametersMax"
+        );
+
+        require(
+            params.unlockedLiquidityPercentage > 0 &&
+            params.permanentLockedLiquidityPercentage > 0 &&
+            params.feeAPercentage > 0 &&
+            params.feeBPercentage > 0 &&
+            params.reward0Percentage > 0 &&
+            params.reward1Percentage > 0, 
+            "InvalidSplitPositionParametersMin"
+        );
+
+        require(vesting[from] == 0, "UnsupportPositionHasVestingLock");
+
+        require(from != to, "FromIsTo");
+
+        updateFees(from, feeAPerLiquidity, feeBPerLiquidity);
+        updateFees(to, feeAPerLiquidity, feeBPerLiquidity);
+
+        unlockedLiquiditySplit = getUnlockedLiquiditybyPercentage(from, params.unlockedLiquidityPercentage);
+        removeLiquidity(from, unlockedLiquidityDelta);
+        addLiquidity(to, unlockedLiquidityDelta);
+
+        permanentLockedLiquiditySplit = getPermanentLockedLiquidityByPercentage(from, params.permanentLockedLiquidityPercentage);
+        removePermanentLiquidity(from, permanentLockedLiquiditySplit);
+        addPermanentLiquidity(to, permanentLockedLiquiditySplit);
+
+        (feeASplit, feeBSplit) = getPendingFeeByPercentage(from, params.feeAPercentage, params.feeBPercentage);
+        removeFeePending(from, feeASplit, feeBSplit);
+        addFeePending(to, feeASplit, feeBSplit);
     }
 
     

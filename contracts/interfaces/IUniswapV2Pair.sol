@@ -125,6 +125,15 @@ interface IUniswapV2Pair {
         uint16 numberOfPeriod;
     }
 
+    struct SplitPositionParameters {
+        uint8 unlockedLiquidityPercentage;
+        uint8 permanentLockedLiquidityPercentage;
+        uint8 feeAPercentage;
+        uint8 feeBPercentage;
+        uint8 reward0Percentage;
+        uint8 reward1Percentage;
+    }
+
     
 
     error PriceRangeViolation();

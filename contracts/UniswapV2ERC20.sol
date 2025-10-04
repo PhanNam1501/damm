@@ -11,6 +11,7 @@ contract UniswapV2ERC20 is IUniswapV2ERC20 {
     using SafeMath for uint128;
     using Uint256x256Math for uint256;
     using SafeCast for uint256;
+    using SafeCast for uint8;
     
     // State variables - Changed to uint128 for optimization
     string public constant override name = 'Uniswap V2';
@@ -53,6 +54,32 @@ contract UniswapV2ERC20 is IUniswapV2ERC20 {
                 address(this)
             )
         );
+    }
+
+    function getUnlockedLiquiditybyPercentage(
+        address user,
+        uint8 percentage
+    ) internal view returns (uint128 liquidityDelta) {
+        Position memory position = positions[user];
+        liquidityDelta = position.unlockedLiquidity * percentage.safe128() / 100;
+    }
+
+    function getPermanentLockedLiquidityByPercentage(
+        address user,
+        uint8 percentage
+    ) internal view returns (uint128 permanentLockedLiquidityDelta) {
+        Position memory position = positions[user];
+        permanentLockedLiquidityDelta = position.permanentLockedLiquidity * percentage.safe128() / 100;
+    }
+
+    function getPendingFeeByPercentage(
+        address user,
+        uint8 feeAPercentage,
+        uint8 feeBPercentage
+    ) internal view returns (uint128 feeAAmount, uint128 feeBAmount) {
+        Position memory position = positions[user];
+        feeAAmount = position.feeAPending * feeAPercentage / 100;
+        feeBAmount = position.feeBPending * feeBPercentage / 100;
     }
 
     /**
@@ -105,6 +132,45 @@ contract UniswapV2ERC20 is IUniswapV2ERC20 {
 
         position.unlockedLiquidity -= liquidityDelta;
         emit LiquidityModified(user, -int128(liquidityDelta));
+    }
+
+    function addPermanentLiquidity(
+        address user,
+        uint128 liquidityDelta
+    ) internal onlyInitialized(user) {
+        Position storage position = positions[user];
+        position.permanentLockedLiquidity += liquidityDelta;
+    }
+
+    function removePermanentLiquidity(
+        address user,
+        uint128 liquidityDelta
+    ) internal onlyInitialized(user) {
+        Position storage position = positions[user];
+        require(position.permanentLockedLiquidity >= liquidityDelta, "Insufficient liquidity");
+
+        position.permanentLockedLiquidity -= liquidityDelta;
+    }
+
+    function addFeePending(
+        address user,
+        uint128 feeADelta,
+        uint128 feeBDelta
+    ) internal onlyInitialized(user) {
+        Position storage position = positions[user];
+        position.feeAPending += feeADelta;
+        position.feeBPending += feeBDelta;
+    }
+
+    function removeFeePending(
+        address user,
+        uint128 feeADelta,
+        uint128 feeBDelta
+    ) internal onlyInitialized(user) {
+        Position storage position = positions[user];
+        require(position.feeAPending >= feeADelta && position.feeBPending >= feeBDelta, "Insufficient fee");
+        position.feeAPending -= feeADelta;
+        position.feeBPending -= feeBDelta;
     }
 
     /**
