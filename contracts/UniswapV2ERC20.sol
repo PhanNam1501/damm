@@ -18,6 +18,7 @@ contract UniswapV2ERC20 is IUniswapV2ERC20 {
     uint8 public constant override decimals = 18;
     uint256 constant NUM_REWARDS = 2;
     uint128 public totalSupply; 
+    uint128 public permanentTotalSupply;
     
     mapping(address => uint128) public balanceOf;  // Changed to uint128
     mapping(address => mapping(address => uint128)) public allowance;  // Changed to uint128
@@ -127,7 +128,7 @@ contract UniswapV2ERC20 is IUniswapV2ERC20 {
     function lockLiquidity(
         address user,
         uint128 lockAmount
-    ) external onlyInitialized(user) {
+    ) internal onlyInitialized(user) {
         Position storage position = positions[user];
 
         require(position.unlockedLiquidity >= lockAmount, "Insufficient unlocked liquidity");

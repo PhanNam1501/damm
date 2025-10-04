@@ -29,7 +29,6 @@ interface IUniswapV2Pair {
         uint64 activationPoint;
         uint128 liquidity;
         bool collectBothToken;
-
     }
 
     struct AddLiquidityParams {
@@ -117,6 +116,16 @@ interface IUniswapV2Pair {
         uint128 outputAmount;
         uint160 nextSqrtPrice;
     }
+
+    struct VestingParameters {
+        uint64 cliffPoint;
+        uint64 periodFrequency;
+        uint128 cliffUnlockLiquidity;
+        uint128 liquidityPeriod;
+        uint16 numberOfPeriod;
+    }
+
+    
 
     error PriceRangeViolation();
 

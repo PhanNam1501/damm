@@ -7,6 +7,7 @@ import './libraries/math/Math.sol';
 import './libraries/math/UQ112x112.sol';
 import { Curve } from './libraries/Curve.sol';
 import { FeeHelper } from './libraries/FeeHelper.sol';
+import { VestingHelper } from './libraries/VestingHelper.sol';
 import { Constants} from './libraries/Constants.sol';
 import { SafeCast } from './libraries/SafeCast.sol';
 import { IERC20 } from './interfaces/IERC20.sol';
@@ -25,6 +26,7 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     using FeeHelper for FeeHelper.PoolFeesStruct;
     using FeeHelper for FeeHelper.BaseFeeStruct;
     using FeeHelper for FeeHelper.DynamicFeeStruct;
+    using VestingHelper for VestingHelper.Vesting;
     using FeeHelper for uint16;
 
     // uint public constant MINIMUM_LIQUIDITY = 10**3;
@@ -55,7 +57,6 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     uint256 private feeBPerLiquidity; //Q128
     uint128 private lpAFee; 
     uint128 private lpBFee;
-
     uint64 activationPoint;
     
     // Oracle
@@ -66,11 +67,14 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     uint private unlocked = 1;
 
     FeeHelper.PoolFeesStruct private poolFees;
+    // VestingHelper.Vesting private vesting;
+    mapping(address => VestingHelper.Vesting) private vesting;
     // FeeHelper.BaseFeeStruct private baseFees;
     // FeeHelper.DynamicFeeStruct private dynamicFees;
 
-    IActivationHandler activationHandler;
-    IPositionManager positionManager;
+    IActivationHandler private activationHandler;
+    IPositionManager private positionManager;
+
     address partner;
 
     
@@ -93,18 +97,18 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     );
     event Sync(uint112 reserve0, uint112 reserve1);
 
-    constructor(IActivationHandler _activation, IPositionManager _positionManager, uint160 _sqrtPriceMin, uint160 _sqrtPriceMax, address _token0, address _token1) {
+    constructor(IActivationHandler _activation, IPositionManager _positionManager, address _token0, address _token1) {
         factory = msg.sender;
         positionManager = _positionManager;
         activationHandler = _activation;
-        sqrtMinPrice = _sqrtMinPrice;  
-        sqrtMaxPrice = _sqrtMaxPrice;
         token0 = _token0;
         token1 = _token1;
     }
 
     // Initialize with concentrated liquidity
-    function initialize(    
+    function initialize(
+        uint160 _sqrtPriceMin, 
+        uint160 _sqrtPriceMax,    
         uint160 _sqrtPrice,
         uint128 _liquidity,
         address recipient,
@@ -112,7 +116,9 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     ) external {
         require(msg.sender == factory, 'UniswapV2: FORBIDDEN');
         // Initialize concentrated liquidity parameters in Q128.128
-        require(_sqrtPrice >= sqrtMinPrice && _sqrtPrice <= sqrtMaxPrice, "InvalidPriceRange");
+        require(_sqrtPrice >= _sqrtMinPrice && _sqrtPrice <= _sqrtMaxPrice, "InvalidPriceRange");
+        sqrtMaxPrice = _sqrtPriceMax;
+        sqrtMinPrice = _sqrtPriceMin;
         sqrtPrice = _sqrtPrice;        
         totalSupply = _liquidity;
         (uint256 amountA, uint256 amountB) = getInitializedAmount(_sqrtMinPrice, _sqrtMaxPrice, _sqrtPrice, _liquidity);
@@ -416,10 +422,6 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         // Apply swap result - update price and fees
         applySwapResult(swapResult, feeMode, currentTimestamp);
         
-        // // Update reserves with new balances
-        // _update(balance0, balance1);
-        
-        // Update dynamic fee state if needed
         if (poolFees.dynamicFees.initialized) {
             poolFees.dynamicFees.updateVolatilityAccumulator(sqrtPrice);
         }
@@ -501,12 +503,6 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         reserve0 += amount0.safe128();
         reserve1 += amount1.safe128();
 
-
-        // uint256 balance0 = IERC20(_token0).balanceOf(address(this));
-        // uint256 balance1 = IERC20(_token1).balanceOf(address(this));
-        
-        // // // Update reserves with new balances
-        // _update(balance0, balance1);
         require(amount0 <= amount0Threshold && amount1 <= amount1Threshold, "ExceededSlippage");
     }
 
@@ -561,20 +557,118 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     ) external returns (uint128 feeA, uint128 feeB) {
         address _token0 = token0;
         address _token1 = token1;
+        updateFees(recipient, feeAPerLiquidity, feeBPerLiquidity);
         require(recipient != address(0), "Address is zero");
         (feeA, feeB) = claimFees(recipient);
 
         if (feeA > 0) {
-            IERC20(_token0).transfer(recipient, amount0);
+            IERC20(_token0).transfer(recipient, feeA);
             lpAFee -= feeA;
         }
         if (feeB > 0) {
-            IERC20(_token0).transfer(recipient, amount0);
+            IERC20(_token0).transfer(recipient, feeB);
             lpAFee -= feeA;
         }
     }
 
-    // Update reserves và oracle
+    function claimProtocolFee(
+        address recipient
+    ) external returns (uint128 feeA, uint128 feeB) {
+        address _token0 = token0;
+        address _token1 = token1;
+
+        require(recipient != address(0), "Address is zero");
+        feeA = protocolFeeA;
+        feeB = protocolFeeB;
+
+        if (feeA > 0) {
+            IERC20(_token0).transfer(recipient, feeA);
+            protocolFeeA = 0;
+        }
+        if (feeB > 0) {
+            IERC20(_token0).transfer(recipient, feeA);
+            protocolFeeB = 0;
+        }
+    }
+
+    function getCliffPoint(uint64 currentPoint, address user) private view returns (uint64) {
+        VestingHelper.Vesting memory _vesting = vesting[user];
+        if (_vesting.cliffPoint != 0) {
+            return _vesting.cliffPoint;
+        } else {
+            return currentPoint;
+        }
+    }
+
+    function getTotalLockAmount(address user) private returns(uint128 totalAmount) {
+        VestingHelper.Vesting memory _vesting = vesting[user];
+        totalAmount = _vesting.cliffUnlockLiquidity + _vesting.liquidityPerPeriod * _vesting.numberOfPeriod.safe128();
+    }
+
+    function validateVesting(uint64 currentPoint, uint64 maxVestingDuration, address user) private view {
+        VestingHelper.Vesting memory _vesting = vesting[user];
+        
+        uint64 cliffPoint = getCliffPoint(currentPoint, user);
+        require(cliffPoint >= currentPoint, "Invalid Vesting Info1");
+        require(_vesting.numberOfPeriod > 0, "Invalid Vesting Info2");
+        require(_vesting.periodFrequency > 0 && _vesting.liquidityPerPeriod > 0, "Invalid Vesting Info3");
+
+        uint64 vestingDuration = (cliffPoint - currentPoint) + (_vesting.periodFrequency * _vesting.numberOfPeriod);
+        require(vestingDuration <= maxVestingDuration, "Invalid Vesting Info4");
+
+        require(getTotalLockAmount(user) > 0, "Invalid Vesting Info5");
+    }
+
+
+    function lockPosition(
+        uint64 cliffPoint,
+        uint64 periodFrequency,
+        uint128 cliffUnlockLiquidity,
+        uint128 liquidityPerPeriod,
+        uint16 numberOfPeriod,
+        address recipient
+    ) external {
+        (uint64 currentPoint, uint64 maxVestingDuration) = activationHandler.getCurrentPointAndMaxVestingDuration();
+        validateVesting(currentPoint, maxVestingDuration, recipient);
+
+        uint128 totalLockLiquidity = getTotalLockAmount(recipient);
+        uint64 cliffPoint = getCliffPoint(currentPoint, recipient);
+
+        vesting[recipient].initialize(
+            cliffPoint,
+            periodFrequency,
+            cliffUnlockLiquidity,
+            liquidityPerPeriod,
+            numberOfPeriod
+        );
+
+        lockLiquidity(recipient, totalLockLiquidity);
+    }
+
+    function permanentLockPosition(
+        uint128 permanentLockLiquidity,
+        address recipient
+    ) external {
+        permanentLockLiquidity(recipient, permanentLockLiquidity);
+        permanentTotalSupply += permanentLockLiquidity;
+    }
+
+    function refreshVesting(
+        address recipient
+    ) external {
+        uint64 currentPoint = activationHandler.getCurrentPoint();
+        uint128 releasedLiquidity = vesting[user].getNewReleaseLiquidity(currentPoint);
+        if (releasedLiquidity > 0) {
+            releaseVestedLiquidity(recipient, releasedLiquidity);
+            vesting[user].accumulateReleasedLiquidity(releasedLiquidity);
+        }
+
+        if (vesting[user].isDone()) {
+            delete vesting[user];
+        }
+    }
+
+    
     function _update(uint balance0, uint balance1) private {
         require(balance0 <= type(uint128).max && balance1 <= type(uint128).max, 'UniswapV2: BALANCE_OVERFLOW');
         
