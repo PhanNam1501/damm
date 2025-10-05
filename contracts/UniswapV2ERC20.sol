@@ -8,7 +8,7 @@ import {Uint256x256Math} from './libraries/math/Uint256x256Math.sol';
 import {SafeCast} from './libraries/SafeCast.sol';
 
 contract UniswapV2ERC20 is IUniswapV2ERC20 {
-    using SafeMath for uint128;
+    using SafeMath for uint256;
     using Uint256x256Math for uint256;
     using SafeCast for uint256;
     using SafeCast for uint8;
@@ -308,6 +308,86 @@ contract UniswapV2ERC20 is IUniswapV2ERC20 {
     ) external view returns (uint128 feeA, uint128 feeB) {
         Position memory position = positions[user];
         return (position.feeAPending, position.feeBPending);
+    }
+
+    //Rewards
+
+    function getTotalReward(
+        address user,
+        uint256 index
+    ) public view returns (uint128) {
+        Position memory position = positions[user];
+        return position.rewardInfos[index].rewardPendings;
+    }
+
+    function accumlateTotalClaimedRewards(
+        address user,
+        uint256 index,
+        uint128 reward
+    ) private {
+        Position storage position = positions[user];
+        uint128 totalClaimedReward = position.rewardInfos[index].totalClaimedRewards;
+        position.rewardInfos[index].totalClaimedRewards = totalClaimedReward + reward;
+    }
+
+    function resetAllPendingReward(
+        address user,
+        uint256 index
+    ) private {
+        Position storage position = positions[user];
+        position.rewardInfos[index].rewardPendings = 0;
+    }
+
+    function claimReward(
+        address user,
+        uint256 index
+    ) internal returns (uint128) {
+        uint128 totalReward = getTotalReward(user, index);
+        accumlateTotalClaimedRewards(user, index, totalReward);
+        resetAllPendingReward(user, index);
+
+        return totalReward;
+    }
+
+    function updateRewardByPosition(
+        address user,
+        uint256 index,
+        uint128 positionLiquidity,
+        uint256 rewardPerTokenStored
+    ) internal {
+        Position storage position = positions[user];
+        uint128 newReward = (uint256(positionLiquidity).mul(rewardPerTokenStored.sub(position.rewardInfos[index].rewardPerTokenCheckpoint)) >> 128).safe128();
+
+        position.rewardInfos[index].rewardPendings += newReward;
+        position.rewardInfos[index].rewardPerTokenCheckpoint = rewardPerTokenStored;
+    }
+
+    function getPendingRewardByPercentage(
+        address user,
+        uint256 index,
+        uint8 rewardPercentage
+    ) internal view returns (uint128 rewardSplit) {
+        Position memory position = positions[user];
+        rewardSplit = position.rewardInfos[index].rewardPendings * uint128(rewardPercentage) / 100;
+    }
+
+    function addRewardPending(
+        address user,
+        uint256 index,
+        uint128 rewardAmount
+    ) internal {
+        Position storage position = positions[user];
+        position.rewardInfos[index].rewardPendings += rewardAmount;
+    }
+
+    function removeRewardPending(
+        address user,
+        uint256 index,
+        uint128 rewardAmount
+    ) internal {
+        Position storage position = positions[user];
+        require(rewardAmount < position.rewardInfos[index].rewardPendings, "Not enough reward");
+        position.rewardInfos[index].rewardPendings += rewardAmount;
     }
 
     /**

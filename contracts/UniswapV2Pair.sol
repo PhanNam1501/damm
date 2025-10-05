@@ -17,8 +17,10 @@ import { IActivationHandler } from './interfaces/IActivationHandler.sol';
 import { IPositionManager } from './interfaces/IPositionManager.sol';
 import { IUniswapV3MintCallback } from './interfaces/IUniswapV3MintCallback.sol';
 import { IUniswapV3SwapCallback } from './interfaces/IUniswapV3SwapCallback.sol';
+import { IRewarderVault } from './interfaces/IRewarderVault.sol';
+import { Rewarder } from './Rewarder.sol';
 
-contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
+contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20, Rewarder {
     using SafeMath for uint256;
     using SafeCast for uint256;
     using UQ112x112 for uint224;
@@ -478,6 +480,7 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         // Calculate liquidity based on current state
         address _token0 = token0;
         address _token1 = token1;
+        updateRewardByPool(recipient, uint64(block.timestamp));
         ModifyLiquidityResult memory result = getAmountsForModifyLiquidity(liquidityDelta);
         amount0 = result.tokenAAmount;
         amount1 = result.tokenBAmount;
@@ -531,6 +534,7 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
     ) external lock returns (uint256 amount0, uint256 amount1) {
         address _token0 = token0;
         address _token1 = token1;
+        updateRewardByPool(recipient, uint64(block.timestamp));
         ModifyLiquidityResult memory result = getAmountsForModifyLiquidity(liquidityDelta);
         amount0 = result.tokenAAmount;
         amount1 = result.tokenBAmount;
@@ -703,6 +707,11 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         require(vesting[from] == 0, "UnsupportPositionHasVestingLock");
 
         require(from != to, "FromIsTo");
+        uint64 currentTime = uint64(block.timestamp);
+
+        updateRewards(currentTime, totalSupply);
+        updatePositionReward(from, currentTime);
+        updatePositionReward(to, currentTime);
 
         updateFees(from, feeAPerLiquidity, feeBPerLiquidity);
         updateFees(to, feeAPerLiquidity, feeBPerLiquidity);
@@ -718,6 +727,96 @@ contract UniswapV2Pair is IUniswapV2Pair, UniswapV2ERC20 {
         (feeASplit, feeBSplit) = getPendingFeeByPercentage(from, params.feeAPercentage, params.feeBPercentage);
         removeFeePending(from, feeASplit, feeBSplit);
         addFeePending(to, feeASplit, feeBSplit);
+
+        if (poolRewardInitialized()) {
+            if (params.reward0Percentage > 0) {
+                if (initialized(0)) {
+                    reward0Split = getPendingRewardByPercentage(from, 0, params.reward0Percentage);
+
+                    removeRewardPending(from, 0, reward0Split);
+                    addRewardPending(to, 0, reward0Split);
+                }
+            }
+
+            if (params.reward1Percentage > 0) {
+                if (initialized(1)) {
+                    reward1Split = getPendingRewardByPercentage(from, 1, params.reward1Percentage);
+
+                    removeRewardPending(from, 1, reward1Split);
+                    addRewardPending(to, 1, reward1Split);
+                }
+            }
+        }
+    }
+
+    function poolRewardInitialized() private returns (bool) {
+        return initialized(0) || initialized(1);
+    }
+
+    function updatePositionReward(
+        address user,
+        uint64 currentTime
+    ) private {
+        for (uint256 i = 0; i < NUM_REWARDS; i++) {
+            if (initialized(i)) {
+                uint256 rewardPerTokenStored = rewardInfos[i].rewardPerTokenStored;
+                updateRewardByPosition(
+                    user,
+                    i,
+                    totalSupply,
+                    rewardPerTokenStored
+                );
+            }
+        }
+    }
+
+    function updateRewardByPool(
+        address user,
+        uint64 currentTime
+    ) private {
+        if (poolRewardInitialized()) {
+            // update pool reward before any update about position reward
+            updateRewards(currentTime, totalSupply);
+            updatePositionReward(user, currentTime);
+        }
+    }
+
+    function fundReward(
+        uint256 index,
+        uint128 amountIn,
+        bool carryForward
+    ) external {
+        uint64 currentTime = uint64(block.timestamp);
+        updateRewards(currentTime, totalSupply);
+        address tokenIn = rewardInfos[index].token;
+        address vault = rewardInfos[index].vault;
+        if (carryForward) {
+            uint128 carryForwardIneligibleReawrd = 
+                rewardInfos[index].rewardRate.mul(
+                    uint256(rewardInfos[index].cummulativeSecondsWithEmptyLiquidityReward)
+                ) >> 128;
+
+                rewardInfos[index].cummulativeSecondsWithEmptyLiquidityReward = 0;
+                amountIn += carryForwardIneligibleReawrd;
+        } 
+
+        require(rewardInfos[index].cummulativeSecondsWithEmptyLiquidityReward == 0, "MustWithdrawnIneligibleReward");
+
+        updateRateAfterFunding(index, currentTime, amountIn);
+
+        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        IERC20(tokenIn).approve(vault, value);
+        IRewarderVault(vault).deposit(token, amountIn);
+    }
+
+    function claimReward(address user, uint256 index) external {
+        address tokenIn = rewardInfos[index].token;
+        address vault = rewardInfos[index].vault;
+        updateRewardByPool(user, uint64(block.timestamp));
+        uint128 totalReward = claimReward(user, index);
+        if (totalReward > 0) {
+            IRewarderVault(vault).withdraw(token, user, totalReward);
+        }
     }
 
     
